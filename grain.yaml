@@ -1,5 +1,5 @@
 name: prscan
-version: 0.1.1
+version: 1.0.0
 description: Network scanner - discovers hosts, NetBIOS names, and MAC addresses
 author: Viggo Lekdorf
 license: MIT

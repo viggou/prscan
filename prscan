@@ -4,7 +4,17 @@ use "colors"
 use "progress"
 use "./grains/scan" as scanner
 
+// ── Version from grain.yaml ──
+
+let _manifest = yaml.parse(sys.read(path.join(path.dirname(sys.currentFile()), "grain.yaml")))
+let VERSION = _manifest.version
+
 // ── Argument parsing ──
+
+if (sys.args.contains("--version")) {
+    print("prscan v" + VERSION)
+    sys.exit(0)
+}
 
 let opts = args.parse({
     timeout: {type: "number", short: "t", default: 1500, help: "Timeout per host in ms"},
@@ -108,8 +118,8 @@ try {
 
 for (ip in ips) {
     let result = scanner.scanHost(ip, timeout)
-    scanned = scanned + 1
-    if (outputFile) { push(allResults, result) }
+    scanned++
+    if (outputFile && (result.status == "up" || verbose)) { push(allResults, result) }
     if (pb) { pb.update(scanned) }
 
     if (result.status == "up") {
