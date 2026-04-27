@@ -10,6 +10,7 @@ let opts = args.parse({
     timeout: {type: "number", short: "t", default: 1500, help: "Timeout per host in ms"},
     verbose: {type: "bool", short: "v", help: "Show all hosts including down ones"},
     quiet: {type: "bool", short: "q", help: "Only show IP and hostname"},
+    output: {type: "string", short: "o", help: "Output results to file (.json, .csv, or .txt)"},
     ["no-progress"]: {type: "bool", help: "Hide the progress bar"}
 }, sys.args)
 
@@ -19,6 +20,7 @@ let timeout = opts.timeout
 let verbose = opts.verbose
 let quiet = opts.quiet
 let noProgress = opts["no-progress"]
+let outputFile = opts.output
 
 if (!target) {
     print("Usage: prscan <target> [options]")
@@ -30,6 +32,7 @@ if (!target) {
     print("  -v, --verbose        Show all hosts including down ones")
     print("  -q, --quiet          Only show IP and hostname")
     print("  --no-progress        Hide the progress bar")
+    print("  -o, --output <file>  Save results to file (.json, .csv, or .txt)")
     sys.exit(1)
 }
 
@@ -67,6 +70,7 @@ if (!quiet) {
 
 let found = 0
 let scanned = 0
+let allResults = []
 let cancelled = false
 
 let pb = nil
@@ -105,6 +109,7 @@ try {
 for (ip in ips) {
     let result = scanner.scanHost(ip, timeout)
     scanned = scanned + 1
+    if (outputFile) { push(allResults, result) }
     if (pb) { pb.update(scanned) }
 
     if (result.status == "up") {
@@ -144,3 +149,34 @@ for (ip in ips) {
 }
 
 printSummary()
+
+// Write results to file if --output specified
+if (outputFile && len(allResults) > 0) {
+    let ext = ""
+    let dotIdx = outputFile.lastIndexOf(".")
+    if (dotIdx >= 0) { ext = outputFile.slice(dotIdx, len(outputFile)).lower() }
+
+    let content = ""
+    if (ext == ".json") {
+        content = json.stringify(allResults, 2)
+    } elif (ext == ".csv") {
+        content = "ip,hostname,domain,mac,status\n"
+        for (r in allResults) {
+            content = content + r.ip + "," + r.hostname + "," + r.domain + "," + r.mac + "," + r.status + "\n"
+        }
+    } else {
+        for (r in allResults) {
+            let line = r.ip
+            if (r.hostname != "") { line = line + "\t" + r.hostname }
+            if (r.mac != "") { line = line + "\t" + r.mac }
+            if (r.domain != "") { line = line + "\t" + r.domain }
+            line = line + "\t" + r.status
+            content = content + line + "\n"
+        }
+    }
+
+    sys.write(outputFile, content)
+    if (!quiet) {
+        print(colors.dim("Results written to " + outputFile))
+    }
+}
