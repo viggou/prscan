@@ -1,0 +1,8 @@
+name: prscan
+version: 0.1.0
+description: Network scanner - discovers hosts, NetBIOS names, and MAC addresses
+author: Viggo Lekdorf
+license: MIT
+main: grains/scan.praia
+dependencies:
+  arp: github.com/viggou/praia-arp

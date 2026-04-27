@@ -1,0 +1,238 @@
+// prscan — network scanner library
+//
+// Usage:
+//   use "prscan"
+//
+//   let results = prscan.scan("192.168.1.0/24", {timeout: 1500})
+//   let host = prscan.scanHost("192.168.1.1", 1500)
+//
+// Each result is a map: {ip, hostname, domain, mac, status}
+// status is "up" or "down"
+
+use "hex"
+use "arp"
+
+// ── NetBIOS NBSTAT packet ──
+
+let NBSTAT_QUERY = bytes.from([
+    0xA0, 0x00,       // Transaction ID
+    0x00, 0x00,       // Flags: query
+    0x00, 0x01,       // Questions: 1
+    0x00, 0x00,       // Answer RRs
+    0x00, 0x00,       // Authority RRs
+    0x00, 0x00,       // Additional RRs
+    0x20,             // Name length (32 encoded bytes)
+    0x43, 0x4B,       // "* " encoded
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x41, 0x41, 0x41, 0x41, 0x41, 0x41,
+    0x00,             // Name terminator
+    0x00, 0x21,       // Type: NBSTAT
+    0x00, 0x01        // Class: IN
+])
+
+// ── IP range parsing ──
+
+func parseRange(input) {
+    if (input.contains("/")) {
+        return parseCIDR(input)
+    }
+    if (input.contains("-")) {
+        let parts = input.split("-")
+        let startIp = ipToInt(parts[0].strip())
+        let endPart = parts[1].strip()
+        let endIp = 0
+        if (endPart.contains(".")) {
+            endIp = ipToInt(endPart)
+        } else {
+            let base = parts[0].strip().split(".")
+            base[3] = endPart
+            endIp = ipToInt(base.join("."))
+        }
+        return generateRange(startIp, endIp)
+    }
+    return [input]
+}
+
+func ipToInt(ip) {
+    let parts = ip.split(".")
+    return num(parts[0]) * 16777216 + num(parts[1]) * 65536 + num(parts[2]) * 256 + num(parts[3])
+}
+
+func intToIp(n) {
+    let a = math.floor(n / 16777216) % 256
+    let b = math.floor(n / 65536) % 256
+    let c = math.floor(n / 256) % 256
+    let d = n % 256
+    return str(a) + "." + str(b) + "." + str(c) + "." + str(d)
+}
+
+func parseCIDR(cidr) {
+    let parts = cidr.split("/")
+    let ip = parts[0]
+    let prefix = num(parts[1])
+    let hostBits = 32 - prefix
+    let numHosts = 1 << hostBits
+    let baseIp = ipToInt(ip)
+    let networkAddr = baseIp & ~(numHosts - 1)
+    return generateRange(networkAddr + 1, networkAddr + numHosts - 2)
+}
+
+func generateRange(startInt, endInt) {
+    let ips = []
+    for (i in startInt..endInt + 1) {
+        push(ips, intToIp(i))
+    }
+    return ips
+}
+
+// ── NetBIOS response parsing ──
+
+func parseNBSTATResponse(data) {
+    let raw = bytes.toArray(data)
+    if (len(raw) < 57) { return nil }
+
+    let nameCount = raw[56]
+    let names = []
+    let offset = 57
+
+    for (i in 0..nameCount) {
+        if (offset + 18 > len(raw)) { break }
+        let nameBytes = []
+        for (j in 0..15) {
+            push(nameBytes, raw[offset + j])
+        }
+        let nameType = raw[offset + 15]
+        let flags = raw[offset + 16] * 256 + raw[offset + 17]
+        let isGroup = (flags & 0x8000) != 0
+
+        let name = ""
+        for (b in nameBytes) {
+            if (b >= 32 && b <= 126) { name = name + fromCharCode(b) }
+        }
+        name = name.strip()
+
+        if (len(name) > 0) {
+            push(names, {
+                name: name,
+                group: isGroup,
+                suffix: nameType
+            })
+        }
+        offset = offset + 18
+    }
+
+    let mac = ""
+    if (offset + 6 <= len(raw)) {
+        let macParts = []
+        for (j in 0..6) {
+            let h = hex.fromInt(raw[offset + j], 2)
+            push(macParts, h)
+        }
+        mac = macParts.join(":")
+    }
+
+    let hostname = ""
+    let domain = ""
+    for (entry in names) {
+        if (entry.suffix == 0 && !entry.group && hostname == "") {
+            hostname = entry.name
+        }
+        if (entry.suffix == 0 && entry.group && domain == "") {
+            domain = entry.name
+        }
+    }
+
+    return {
+        hostname: hostname,
+        domain: domain,
+        mac: mac,
+        names: names
+    }
+}
+
+// ── Scanning ──
+
+func scanHost(ip, timeout = 1500) {
+    let result = {ip: ip, hostname: "", domain: "", mac: "", status: "down"}
+
+    // Try NetBIOS NBSTAT query
+    let sock = nil
+    try {
+        sock = net.udp()
+        net.setTimeout(sock, timeout)
+        net.sendTo(sock, ip, 137, NBSTAT_QUERY)
+        let resp = net.recvFrom(sock)
+        net.close(sock)
+        sock = nil
+
+        let info = parseNBSTATResponse(resp.data)
+        if (info) {
+            result.hostname = info.hostname
+            result.domain = info.domain
+            result.mac = info.mac
+            result.status = "up"
+        }
+    } catch (e) {
+        if (sock) { try { net.close(sock) } catch (e2) {} }
+        if (str(e) == "Interrupted") { throw e }
+    }
+
+    // If no NetBIOS response, try reverse DNS
+    if (result.hostname == "") {
+        try {
+            let r = sys.exec(["host", ip])
+            if (r.exitCode != 0 || !r.stdout.contains("domain name pointer")) {
+                r = sys.exec(["dig", "+short", "-x", ip])
+            }
+            let out = r.stdout.strip()
+            if (r.exitCode == 0 && len(out) > 0) {
+                if (out.contains("domain name pointer ")) {
+                    out = out.split("domain name pointer ")[1]
+                }
+                if (out.endsWith(".")) {
+                    out = out.slice(0, len(out) - 1)
+                }
+                if (len(out) > 0 && !out.contains("NXDOMAIN") && !out.contains("not found")) {
+                    result.hostname = out
+                    result.status = "up"
+                }
+            }
+        } catch (e) {
+            if (str(e) == "Interrupted") { throw e }
+        }
+    }
+
+    // Try ARP for MAC if we don't have it (or it's all zeros)
+    if ((result.mac == "" || result.mac == "00:00:00:00:00:00") && result.status == "up") {
+        result.mac = ""
+        try {
+            let entry = arp.refresh(ip)
+            if (entry) {
+                result.mac = entry.mac
+                if (result.hostname == "" && entry.hostname != "") {
+                    result.hostname = entry.hostname
+                }
+            }
+        } catch (e) {
+            if (str(e) == "Interrupted") { throw e }
+        }
+    }
+
+    return result
+}
+
+// High-level scan: parse target, scan all hosts, return results array
+func scan(target, opts) {
+    let timeout = 1500
+    if (opts && opts.timeout) { timeout = opts.timeout }
+    let ips = parseRange(target)
+    let results = []
+    for (ip in ips) {
+        push(results, scanHost(ip, timeout))
+    }
+    return results
+}
+
+export { scan, scanHost, parseRange, parseNBSTATResponse }

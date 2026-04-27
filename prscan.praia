@@ -1,0 +1,118 @@
+#!/usr/bin/env praia
+use "args"
+use "colors"
+use "./grains/scan" as scanner
+
+// ── Argument parsing ──
+
+let opts = args.parse({
+    timeout: {type: "number", short: "t", default: 1500, help: "Timeout per host in ms"},
+    verbose: {type: "bool", short: "v", help: "Show all hosts including down ones"},
+    quiet: {type: "bool", short: "q", help: "Only show IP and hostname"}
+}, sys.args)
+
+let target = nil
+if (len(opts.args) > 0) { target = opts.args[0] }
+let timeout = opts.timeout
+let verbose = opts.verbose
+let quiet = opts.quiet
+
+if (!target) {
+    print("Usage: prscan <target> [options]")
+    print("")
+    print("  target   IP address, range (192.168.1.1-50), or CIDR (192.168.1.0/24)")
+    print("")
+    print("Options:")
+    print("  -t, --timeout <ms>   Timeout per host (default: 1500)")
+    print("  -v, --verbose        Show all hosts including down ones")
+    print("  -q, --quiet          Only show IP and hostname")
+    sys.exit(1)
+}
+
+let ips = scanner.parseRange(target)
+
+// ── Column layout ──
+
+let termCols = 80
+try { termCols = sys.termSize().cols } catch (e) {}
+let colIp = 18
+let colMac = 20
+let colDomain = 16
+let colHn = termCols - colIp - colMac - colDomain
+if (colHn < 12) { colHn = 12 }
+
+func truncate(s, maxLen) {
+    if (len(s) <= maxLen) { return s.padEnd(maxLen) }
+    return s.slice(0, maxLen - 1) + "…"
+}
+
+// ── Output ──
+
+if (!quiet) {
+    print("")
+    print(colors.bold("prscan") + " - scanning " + str(len(ips)) + " host(s)")
+    print("")
+    sys.stdout(colors.dim(
+        "IP".padEnd(colIp) +
+        "HOSTNAME".padEnd(colHn) +
+        "MAC".padEnd(colMac) +
+        "DOMAIN"
+    ) + "\n")
+    sys.stdout(colors.dim("-".repeat(termCols)) + "\n")
+}
+
+let found = 0
+let scanned = 0
+let cancelled = false
+
+func printSummary() {
+    if (!quiet) {
+        let down = scanned - found
+        print("")
+        let status = "Hosts scanned: " + str(scanned) + "/" + str(len(ips))
+        status = status + " - " + colors.green(str(found) + " up")
+        status = status + " - " + colors.red(str(down) + " down")
+        if (cancelled) { status = status + colors.yellow(" (interrupted)") }
+        print(status)
+    }
+}
+
+try {
+
+for (ip in ips) {
+    let result = scanner.scanHost(ip, timeout)
+    scanned = scanned + 1
+
+    if (result.status == "up") {
+        found = found + 1
+        if (quiet) {
+            let line = result.ip
+            if (result.hostname != "") { line = line + "\t" + result.hostname }
+            print(line)
+        } else {
+            let hn = result.hostname != "" ? result.hostname : "—"
+            let mc = result.mac != "" ? result.mac : "—"
+            let dm = result.domain != "" ? result.domain : "—"
+            sys.stdout(
+                colors.green(truncate(result.ip, colIp)) +
+                colors.bold(truncate(hn, colHn)) +
+                truncate(mc, colMac) +
+                dm
+            )
+            print("")
+        }
+    } elif (verbose && !quiet) {
+        sys.stdout(colors.dim(
+            result.ip.padEnd(colIp) +
+            "—".padEnd(colHn) +
+            "—".padEnd(colMac) +
+            "—"
+        ) + "\n")
+    }
+}
+
+} catch (err) {
+    cancelled = true
+}
+
+printSummary()
