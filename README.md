@@ -4,7 +4,7 @@ A network scanner written in [Praia](https://praia.sh) that discovers hosts, Net
 
 ## Installation
 
-Requires [Praia](https://praia.sh/getting-started/installation/) and the [arp](https://github.com/praia-lang/praia-arp) grain.
+Requires [Praia](https://praia.sh/getting-started/installation/) and the [arp](https://github.com/viggou/praia-arp) grain.
 
 ```sh
 git clone https://github.com/praia-lang/prscan.git
