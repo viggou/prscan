@@ -1,7 +1,6 @@
 #!/usr/bin/env praia
 use "args"
 use "colors"
-use "progress"
 use "./grains/scan" as scanner
 
 // ── Version from grain.yaml ──
@@ -22,7 +21,8 @@ let opts = args.parse({
     quiet: {type: "bool", short: "q", help: "Only show IP and hostname"},
     output: {type: "string", short: "o", help: "Output results to file (.json, .csv, or .txt)"},
     interface: {type: "string", short: "i", help: "Network interface to use (e.g. en0, eth0)"},
-    ["no-progress"]: {type: "bool", help: "Hide the progress bar"}
+    ["no-progress"]: {type: "bool", help: "Hide the progress bar"},
+    slow: {type: "bool", help: "Sequential scan (one host at a time)"}
 }, sys.args)
 
 let target = nil
@@ -45,6 +45,7 @@ if (!target) {
     print("  -v, --verbose        Show all hosts including down ones")
     print("  -q, --quiet          Only show IP and hostname")
     print("  --no-progress        Hide the progress bar")
+    print("  --slow               Sequential scan (one host at a time)")
     print("  -o, --output <file>  Save results to file (.json, .csv, or .txt)")
     sys.exit(1)
 }
@@ -66,9 +67,8 @@ func truncate(s, maxLen) {
     return s.slice(0, maxLen - 1) + "…"
 }
 
-// ── Output ──
-
-if (!quiet) {
+func printHeader() {
+    if (quiet) { return }
     print("")
     let header = colors.bold("prscan") + " - scanning " + str(len(ips)) + " host(s)"
     if (iface) { header = header + " on " + colors.cyan(iface) }
@@ -83,87 +83,116 @@ if (!quiet) {
     sys.stdout(colors.dim("-".repeat(termCols)) + "\n")
 }
 
-let found = 0
-let scanned = 0
-let allResults = []
-let cancelled = false
-
-let pb = nil
-if (!quiet && !noProgress) {
-    // "  [####..........] 45% 115/254" — reserve space for brackets, %, count
-    let countStr = str(len(ips)) + "/" + str(len(ips))
-    let barWidth = termCols - len(countStr) - 10  // 10 for "  [", "] ", "100% "
-    if (barWidth < 10) { barWidth = 10 }
-    pb = progress.bar({width: barWidth, showPercent: true, showCount: true})
-    pb.total(len(ips))
-}
-
-func clearProgress() {
-    if (pb) { sys.stdout("\r" + " ".repeat(termCols) + "\r") }
-}
-
-func redrawProgress() {
-    if (pb) { pb.update(scanned) }
-}
-
-func printSummary() {
-    clearProgress()
-    if (!quiet) {
-        let down = scanned - found
-        print("")
-        let status = "Hosts scanned: " + str(scanned) + "/" + str(len(ips))
-        status = status + " - " + colors.green(str(found) + " up")
-        status = status + " - " + colors.red(str(down) + " down")
-        if (cancelled) { status = status + colors.yellow(" (interrupted)") }
-        print(status)
-    }
-}
-
-try {
-
-for (ip in ips) {
-    let result = scanner.scanHost(ip, timeout, iface)
-    scanned++
-    if (outputFile && (result.status == "up" || verbose)) { push(allResults, result) }
-    if (pb) { pb.update(scanned) }
-
-    if (result.status == "up") {
-        found = found + 1
+func printResult(r) {
+    if (r.status == "up") {
         if (quiet) {
-            let line = result.ip
-            if (result.hostname != "") { line = line + "\t" + result.hostname }
+            let line = r.ip
+            if (r.hostname != "") { line = line + "\t" + r.hostname }
             print(line)
         } else {
-            clearProgress()
-            let hn = result.hostname != "" ? result.hostname : "—"
-            let mc = result.mac != "" ? result.mac : "—"
-            let dm = result.domain != "" ? result.domain : "—"
+            let hn = r.hostname != "" ? r.hostname : "—"
+            let mc = r.mac != "" ? r.mac : "—"
+            let dm = r.domain != "" ? r.domain : "—"
             sys.stdout(
-                colors.green(truncate(result.ip, colIp)) +
+                colors.green(truncate(r.ip, colIp)) +
                 colors.bold(truncate(hn, colHn)) +
                 truncate(mc, colMac) +
                 dm
             )
             print("")
-            redrawProgress()
         }
     } elif (verbose && !quiet) {
-        clearProgress()
         sys.stdout(colors.dim(
-            result.ip.padEnd(colIp) +
+            r.ip.padEnd(colIp) +
             "—".padEnd(colHn) +
             "—".padEnd(colMac) +
             "—"
         ) + "\n")
-        redrawProgress()
+    }
+}
+
+let found = 0
+let cancelled = false
+let allResults = []
+
+try {
+
+if (opts.slow || len(ips) == 1) {
+    // ── Sequential scan (original behavior) ──
+    use "progress"
+    printHeader()
+
+    let scanned = 0
+    let pb = nil
+    if (!quiet && !noProgress) {
+        let countStr = str(len(ips)) + "/" + str(len(ips))
+        let barWidth = termCols - len(countStr) - 10
+        if (barWidth < 10) { barWidth = 10 }
+        pb = progress.bar({width: barWidth, showPercent: true, showCount: true})
+        pb.total(len(ips))
+    }
+
+    for (ip in ips) {
+        let result = scanner.scanHost(ip, timeout, iface)
+        scanned++
+        if (outputFile && (result.status == "up" || verbose)) { push(allResults, result) }
+        if (result.status == "up") { found++ }
+        if (pb) {
+            sys.stdout("\r" + " ".repeat(termCols) + "\r")
+            printResult(result)
+            pb.update(scanned)
+        } else {
+            printResult(result)
+        }
+    }
+
+    if (pb) { sys.stdout("\r" + " ".repeat(termCols) + "\r") }
+    if (!quiet) {
+        print("")
+        let down = scanned - found
+        let status = "Hosts scanned: " + str(scanned) + "/" + str(len(ips))
+        status = status + " - " + colors.green(str(found) + " up")
+        status = status + " - " + colors.red(str(down) + " down")
+        print(status)
+    }
+
+} else {
+    // ── Concurrent scan (default) ──
+    if (!quiet && !noProgress) {
+        sys.stdout(colors.dim("  discovering hosts...") + "\r")
+    }
+
+    let results = scanner.scanAll(ips, timeout, iface)
+
+    // Clear status line and print header + results
+    if (!quiet && !noProgress) {
+        sys.stdout(" ".repeat(termCols) + "\r")
+    }
+    printHeader()
+
+    for (r in results) {
+        if (outputFile && (r.status == "up" || verbose)) { push(allResults, r) }
+        if (r.status == "up") { found++ }
+        printResult(r)
+    }
+
+    if (!quiet) {
+        let down = len(ips) - found
+        print("")
+        let status = "Hosts scanned: " + str(len(ips)) + "/" + str(len(ips))
+        status = status + " - " + colors.green(str(found) + " up")
+        status = status + " - " + colors.red(str(down) + " down")
+        print(status)
     }
 }
 
 } catch (err) {
     cancelled = true
+    if (!quiet) {
+        print("")
+        print(colors.yellow("Scan interrupted"))
+    }
 }
-
-printSummary()
 
 // Write results to file if --output specified
 if (outputFile && len(allResults) > 0) {
