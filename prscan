@@ -21,6 +21,7 @@ let opts = args.parse({
     verbose: {type: "bool", short: "v", help: "Show all hosts including down ones"},
     quiet: {type: "bool", short: "q", help: "Only show IP and hostname"},
     output: {type: "string", short: "o", help: "Output results to file (.json, .csv, or .txt)"},
+    interface: {type: "string", short: "i", help: "Network interface to use (e.g. en0, eth0)"},
     ["no-progress"]: {type: "bool", help: "Hide the progress bar"}
 }, sys.args)
 
@@ -31,6 +32,7 @@ let verbose = opts.verbose
 let quiet = opts.quiet
 let noProgress = opts["no-progress"]
 let outputFile = opts.output
+let iface = opts.interface
 
 if (!target) {
     print("Usage: prscan <target> [options]")
@@ -39,6 +41,7 @@ if (!target) {
     print("")
     print("Options:")
     print("  -t, --timeout <ms>   Timeout per host (default: 1500)")
+    print("  -i, --interface <if> Network interface (e.g. en0, eth0)")
     print("  -v, --verbose        Show all hosts including down ones")
     print("  -q, --quiet          Only show IP and hostname")
     print("  --no-progress        Hide the progress bar")
@@ -67,7 +70,9 @@ func truncate(s, maxLen) {
 
 if (!quiet) {
     print("")
-    print(colors.bold("prscan") + " - scanning " + str(len(ips)) + " host(s)")
+    let header = colors.bold("prscan") + " - scanning " + str(len(ips)) + " host(s)"
+    if (iface) { header = header + " on " + colors.cyan(iface) }
+    print(header)
     print("")
     sys.stdout(colors.dim(
         "IP".padEnd(colIp) +
@@ -117,7 +122,7 @@ func printSummary() {
 try {
 
 for (ip in ips) {
-    let result = scanner.scanHost(ip, timeout)
+    let result = scanner.scanHost(ip, timeout, iface)
     scanned++
     if (outputFile && (result.status == "up" || verbose)) { push(allResults, result) }
     if (pb) { pb.update(scanned) }

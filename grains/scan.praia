@@ -154,13 +154,14 @@ func parseNBSTATResponse(data) {
 
 // ── Scanning ──
 
-func scanHost(ip, timeout = 1500) {
+func scanHost(ip, timeout = 1500, iface = nil) {
     let result = {ip: ip, hostname: "", domain: "", mac: "", status: "down"}
 
     // Try NetBIOS NBSTAT query
     let sock = nil
     try {
         sock = net.udp()
+        if (iface) { net.bindInterface(sock, iface) }
         net.setTimeout(sock, timeout)
         net.sendTo(sock, ip, 137, NBSTAT_QUERY)
         let resp = net.recvFrom(sock)
@@ -226,11 +227,13 @@ func scanHost(ip, timeout = 1500) {
 // High-level scan: parse target, scan all hosts, return results array
 func scan(target, opts) {
     let timeout = 1500
+    let iface = nil
     if (opts && opts.timeout) { timeout = opts.timeout }
+    if (opts && opts.interface) { iface = opts.interface }
     let ips = parseRange(target)
     let results = []
     for (ip in ips) {
-        push(results, scanHost(ip, timeout))
+        push(results, scanHost(ip, timeout, iface))
     }
     return results
 }
