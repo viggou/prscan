@@ -1,6 +1,7 @@
 #!/usr/bin/env praia
 use "args"
 use "colors"
+use "progress"
 use "./grains/scan" as scanner
 
 // ── Version from grain.yaml ──
@@ -11,7 +12,7 @@ let VERSION = _manifest.version
 // ── Argument parsing ──
 
 if (sys.args.contains("--version")) {
-    print("prscan v" + VERSION)
+    print("prscan v%{VERSION}")
     sys.exit(0)
 }
 
@@ -25,8 +26,7 @@ let opts = args.parse({
     slow: {type: "bool", help: "Sequential scan (one host at a time)"}
 }, sys.args)
 
-let target = nil
-if (len(opts.args) > 0) { target = opts.args[0] }
+let target = opts.args[0] ?? nil
 let timeout = opts.timeout
 let verbose = opts.verbose
 let quiet = opts.quiet
@@ -57,13 +57,8 @@ let ips = scanner.parseRange(target)
 let ifaceName = iface
 if (!ifaceName) {
     try {
-        let ifaces = net.interfaces()
-        for (i in ifaces) {
-            if (i.up && !i.loopback && i.address.contains(".")) {
-                ifaceName = i.name
-                break
-            }
-        }
+        let found = net.interfaces().find(lam{ i in i.up && !i.loopback && i.address.contains(".") })
+        ifaceName = found?.name
     } catch (e) {}
 }
 
@@ -85,15 +80,12 @@ func truncate(s, maxLen) {
 func printHeader() {
     if (quiet) { return }
     print("")
-    let header = colors.bold("prscan") + " - scanning " + str(len(ips)) + " host(s)"
+    let header = colors.bold("prscan") + " - scanning %{len(ips)} host(s)"
     if (ifaceName) { header = header + " on " + colors.cyan(ifaceName) }
     print(header)
     print("")
     sys.stdout(colors.dim(
-        "IP".padEnd(colIp) +
-        "HOSTNAME".padEnd(colHn) +
-        "MAC".padEnd(colMac) +
-        "DOMAIN"
+        "IP".padEnd(colIp) + "HOSTNAME".padEnd(colHn) + "MAC".padEnd(colMac) + "DOMAIN"
     ) + "\n")
     sys.stdout(colors.dim("-".repeat(termCols)) + "\n")
 }
@@ -111,22 +103,17 @@ func printResult(r) {
             sys.stdout(
                 colors.green(truncate(r.ip, colIp)) +
                 colors.bold(truncate(hn, colHn)) +
-                truncate(mc, colMac) +
-                dm
+                truncate(mc, colMac) + dm + "\n"
             )
-            print("")
         }
     } elif (verbose && !quiet) {
         sys.stdout(colors.dim(
-            r.ip.padEnd(colIp) +
-            "—".padEnd(colHn) +
-            "—".padEnd(colMac) +
-            "—"
+            r.ip.padEnd(colIp) + "—".padEnd(colHn) + "—".padEnd(colMac) + "—"
         ) + "\n")
     }
 }
 
-use "progress"
+// ── Scan ──
 
 let found = 0
 let scanned = 0
@@ -136,7 +123,7 @@ let allResults = []
 let pb = nil
 func setupProgress() {
     if (quiet || noProgress) { return }
-    let countStr = str(len(ips)) + "/" + str(len(ips))
+    let countStr = "%{len(ips)}/%{len(ips)}"
     let barWidth = termCols - len(countStr) - 10
     if (barWidth < 10) { barWidth = 10 }
     pb = progress.bar({width: barWidth, showPercent: true, showCount: true})
@@ -159,26 +146,22 @@ func showResult(r) {
 try {
 
 if (opts.slow || len(ips) == 1) {
-    // ── Sequential scan ──
     printHeader()
     setupProgress()
-
-    for (ip in ips) {
-        showResult(scanner.scanHost(ip, timeout, iface))
-    }
-
+    for (ip in ips) { showResult(scanner.scanHost(ip, timeout, iface)) }
 } else {
-    // ── Concurrent scan (default) ──
     if (!quiet && !noProgress) {
         sys.stdout(colors.dim("  discovering hosts...") + "\r")
     }
 
     scanner.scanAll(ips, timeout, iface,
         lam{ r, i in showResult(r) },
-        lam{ in
-            // Discovery complete — show header and set up progress bar
+        lam{ noPing in
             if (!quiet && !noProgress) {
                 sys.stdout(" ".repeat(termCols) + "\r")
+            }
+            if (noPing && !quiet) {
+                print(colors.yellow("  note: ICMP ping unavailable (run as root for full results)"))
             }
             printHeader()
             setupProgress()
@@ -194,40 +177,38 @@ clearProgress()
 if (!quiet) {
     let down = len(ips) - found
     print("")
-    let status = "Hosts scanned: " + str(scanned) + "/" + str(len(ips))
-    status = status + " - " + colors.green(str(found) + " up")
-    status = status + " - " + colors.red(str(down) + " down")
+    let status = "Hosts scanned: %{scanned}/%{len(ips)}"
+    status = status + " - " + colors.green("%{found} up")
+    status = status + " - " + colors.red("%{down} down")
     if (cancelled) { status = status + colors.yellow(" (interrupted)") }
     print(status)
 }
 
-// Write results to file if --output specified
+// ── Write output file ──
+
 if (outputFile && len(allResults) > 0) {
-    let ext = ""
     let dotIdx = outputFile.lastIndexOf(".")
-    if (dotIdx >= 0) { ext = outputFile.slice(dotIdx, len(outputFile)).lower() }
+    let ext = dotIdx >= 0 ? outputFile.slice(dotIdx).lower() : ""
 
     let content = ""
     if (ext == ".json") {
         content = json.stringify(allResults, 2)
     } elif (ext == ".csv") {
         content = "ip,hostname,domain,mac,status\n"
-        for (r in allResults) {
-            content = content + r.ip + "," + r.hostname + "," + r.domain + "," + r.mac + "," + r.status + "\n"
-        }
+        content = content + (allResults |> map(lam{ r in
+            "%{r.ip},%{r.hostname},%{r.domain},%{r.mac},%{r.status}"
+        })).join("\n") + "\n"
     } else {
-        for (r in allResults) {
-            let line = r.ip
-            if (r.hostname != "") { line = line + "\t" + r.hostname }
-            if (r.mac != "") { line = line + "\t" + r.mac }
-            if (r.domain != "") { line = line + "\t" + r.domain }
-            line = line + "\t" + r.status
-            content = content + line + "\n"
-        }
+        content = (allResults |> map(lam{ r in
+            let parts = [r.ip]
+            if (r.hostname != "") { push(parts, r.hostname) }
+            if (r.mac != "") { push(parts, r.mac) }
+            if (r.domain != "") { push(parts, r.domain) }
+            push(parts, r.status)
+            return parts.join("\t")
+        })).join("\n") + "\n"
     }
 
     sys.write(outputFile, content)
-    if (!quiet) {
-        print(colors.dim("Results written to " + outputFile))
-    }
+    if (!quiet) { print(colors.dim("Results written to %{outputFile}")) }
 }
