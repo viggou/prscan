@@ -52,6 +52,21 @@ if (!target) {
 
 let ips = scanner.parseRange(target)
 
+// ── Detect interface ──
+
+let ifaceName = iface
+if (!ifaceName) {
+    try {
+        let ifaces = net.interfaces()
+        for (i in ifaces) {
+            if (i.up && !i.loopback && i.address.contains(".")) {
+                ifaceName = i.name
+                break
+            }
+        }
+    } catch (e) {}
+}
+
 // ── Column layout ──
 
 let termCols = 80
@@ -71,7 +86,7 @@ func printHeader() {
     if (quiet) { return }
     print("")
     let header = colors.bold("prscan") + " - scanning " + str(len(ips)) + " host(s)"
-    if (iface) { header = header + " on " + colors.cyan(iface) }
+    if (ifaceName) { header = header + " on " + colors.cyan(ifaceName) }
     print(header)
     print("")
     sys.stdout(colors.dim(

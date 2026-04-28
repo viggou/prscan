@@ -284,31 +284,34 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
         let ip = ips[i]
         let r = results[ip]
 
-        if (r.status == "up") {
-            // PTR lookup if no hostname yet
-            if (r.hostname == "") {
-                try {
-                    let records = net.query(ip, "PTR")
-                    if (len(records) > 0) { r.hostname = records[0].hostname }
-                } catch (e) {
-                    if (str(e) == "Interrupted") { throw e }
+        // PTR lookup — try for ALL hosts (not just alive).
+        // A PTR record means the host has a DNS entry → mark as up.
+        // This matches scanHost behavior and works without ICMP permission.
+        if (r.hostname == "") {
+            try {
+                let records = net.query(ip, "PTR")
+                if (len(records) > 0) {
+                    r.hostname = records[0].hostname
+                    r.status = "up"
                 }
+            } catch (e) {
+                if (str(e) == "Interrupted") { throw e }
             }
+        }
 
-            // ARP enrichment if no MAC yet
-            if (r.mac == "" || r.mac == "00:00:00:00:00:00") {
-                r.mac = ""
-                try {
-                    let entry = arp.refresh(ip)
-                    if (entry) {
-                        r.mac = entry.mac
-                        if (r.hostname == "" && entry.hostname != "") {
-                            r.hostname = entry.hostname
-                        }
+        // ARP enrichment for alive hosts
+        if (r.status == "up" && (r.mac == "" || r.mac == "00:00:00:00:00:00")) {
+            r.mac = ""
+            try {
+                let entry = arp.refresh(ip)
+                if (entry) {
+                    r.mac = entry.mac
+                    if (r.hostname == "" && entry.hostname != "") {
+                        r.hostname = entry.hostname
                     }
-                } catch (e) {
-                    if (str(e) == "Interrupted") { throw e }
                 }
+            } catch (e) {
+                if (str(e) == "Interrupted") { throw e }
             }
         }
 
