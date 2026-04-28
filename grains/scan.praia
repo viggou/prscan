@@ -215,16 +215,16 @@ func scanHost(ip, timeout = 1500, iface = nil) {
 }
 
 // ── Concurrent scanning ──
-// Scans all IPs in parallel phases:
-//   1. ICMP ping sweep (net.pingAll) — find alive hosts
-//   2. NetBIOS NBSTAT sweep — send all queries, collect responses
-//   3. PTR lookups — reverse DNS for hosts without names
-//   4. ARP enrichment — MAC addresses for alive hosts
+// Scans all IPs in two concurrent phases, then iterates hosts for enrichment:
+//   Phase 1: ICMP ping sweep (net.pingAll) — find alive hosts
+//   Phase 2: NetBIOS NBSTAT sweep — send all queries, collect responses
+//   Per-host: PTR lookup + ARP enrichment (only for alive hosts)
 //
-// onResult(result) is called for each host as it becomes available.
+// onResult(result, index) is called for each host in order after enrichment.
+// onDiscovery() is called when phases 1+2 complete (before per-host iteration).
 // Returns array of all results.
 
-func scanAll(ips, timeout = 1500, iface = nil, onResult = nil) {
+func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil) {
     // Initialize result map keyed by IP
     let results = {}
     for (ip in ips) {
@@ -232,39 +232,34 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil) {
     }
 
     // ── Phase 1: ICMP ping sweep ──
-    let aliveIps = []
     try {
         let pings = net.pingAll(ips, timeout)
         for (p in pings) {
             if (p.alive) {
                 results[p.host].status = "up"
-                push(aliveIps, p.host)
             }
         }
     } catch (e) {
         if (str(e) == "Interrupted") { throw e }
-        // If ping fails (e.g. no permission), fall back to scanning all IPs
-        aliveIps = ips
+        // If ping fails (e.g. no permission), continue — NetBIOS may still work
     }
 
     // ── Phase 2: NetBIOS NBSTAT sweep ──
-    // Send NBSTAT to ALL IPs (not just alive — some hosts block ICMP but respond to NetBIOS)
+    // Send to ALL IPs — some hosts block ICMP but respond to NetBIOS
     let sock = nil
     try {
         sock = net.udp()
         if (iface) { net.bindInterface(sock, iface) }
-        net.setTimeout(sock, 100) // short recv timeout for polling
+        net.setTimeout(sock, 100)
 
-        // Send all queries
         for (ip in ips) {
             net.sendTo(sock, ip, 137, NBSTAT_QUERY)
         }
 
-        // Collect responses within timeout window
         let start = time.now()
         while (time.now() - start < timeout) {
             let resp = net.recvFrom(sock)
-            if (!resp) { continue } // timeout on this recv, keep trying
+            if (!resp) { continue }
             let info = parseNBSTATResponse(resp.data)
             if (info && results[resp.host]) {
                 let r = results[resp.host]
@@ -272,9 +267,6 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil) {
                 r.domain = info.domain
                 r.mac = info.mac
                 r.status = "up"
-                if (!aliveIps.contains(resp.host)) {
-                    push(aliveIps, resp.host)
-                }
             }
         }
         net.close(sock)
@@ -284,44 +276,44 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil) {
         if (str(e) == "Interrupted") { throw e }
     }
 
-    // ── Phase 3: PTR lookups for hosts without hostnames ──
-    for (ip in aliveIps) {
-        let r = results[ip]
-        if (r.hostname != "") { continue }
-        try {
-            let records = net.query(ip, "PTR")
-            if (len(records) > 0) {
-                r.hostname = records[0].hostname
-            }
-        } catch (e) {
-            if (str(e) == "Interrupted") { throw e }
-        }
-    }
+    if (onDiscovery) { onDiscovery() }
 
-    // ── Phase 4: ARP enrichment ──
-    for (ip in aliveIps) {
+    // ── Per-host enrichment + callback ──
+    let ordered = []
+    for (i in 0..len(ips)) {
+        let ip = ips[i]
         let r = results[ip]
-        if (r.mac != "" && r.mac != "00:00:00:00:00:00") { continue }
-        r.mac = ""
-        try {
-            let entry = arp.refresh(ip)
-            if (entry) {
-                r.mac = entry.mac
-                if (r.hostname == "" && entry.hostname != "") {
-                    r.hostname = entry.hostname
+
+        if (r.status == "up") {
+            // PTR lookup if no hostname yet
+            if (r.hostname == "") {
+                try {
+                    let records = net.query(ip, "PTR")
+                    if (len(records) > 0) { r.hostname = records[0].hostname }
+                } catch (e) {
+                    if (str(e) == "Interrupted") { throw e }
                 }
             }
-        } catch (e) {
-            if (str(e) == "Interrupted") { throw e }
-        }
-    }
 
-    // Build ordered result array and fire callbacks
-    let ordered = []
-    for (ip in ips) {
-        let r = results[ip]
+            // ARP enrichment if no MAC yet
+            if (r.mac == "" || r.mac == "00:00:00:00:00:00") {
+                r.mac = ""
+                try {
+                    let entry = arp.refresh(ip)
+                    if (entry) {
+                        r.mac = entry.mac
+                        if (r.hostname == "" && entry.hostname != "") {
+                            r.hostname = entry.hostname
+                        }
+                    }
+                } catch (e) {
+                    if (str(e) == "Interrupted") { throw e }
+                }
+            }
+        }
+
         push(ordered, r)
-        if (onResult) { onResult(r) }
+        if (onResult) { onResult(r, i) }
     }
     return ordered
 }

@@ -111,49 +111,45 @@ func printResult(r) {
     }
 }
 
+use "progress"
+
 let found = 0
+let scanned = 0
 let cancelled = false
 let allResults = []
+
+let pb = nil
+func setupProgress() {
+    if (quiet || noProgress) { return }
+    let countStr = str(len(ips)) + "/" + str(len(ips))
+    let barWidth = termCols - len(countStr) - 10
+    if (barWidth < 10) { barWidth = 10 }
+    pb = progress.bar({width: barWidth, showPercent: true, showCount: true})
+    pb.total(len(ips))
+}
+
+func clearProgress() {
+    if (pb) { sys.stdout("\r" + " ".repeat(termCols) + "\r") }
+}
+
+func showResult(r) {
+    clearProgress()
+    if (outputFile && (r.status == "up" || verbose)) { push(allResults, r) }
+    if (r.status == "up") { found++ }
+    scanned++
+    printResult(r)
+    if (pb) { pb.update(scanned) }
+}
 
 try {
 
 if (opts.slow || len(ips) == 1) {
-    // ── Sequential scan (original behavior) ──
-    use "progress"
+    // ── Sequential scan ──
     printHeader()
-
-    let scanned = 0
-    let pb = nil
-    if (!quiet && !noProgress) {
-        let countStr = str(len(ips)) + "/" + str(len(ips))
-        let barWidth = termCols - len(countStr) - 10
-        if (barWidth < 10) { barWidth = 10 }
-        pb = progress.bar({width: barWidth, showPercent: true, showCount: true})
-        pb.total(len(ips))
-    }
+    setupProgress()
 
     for (ip in ips) {
-        let result = scanner.scanHost(ip, timeout, iface)
-        scanned++
-        if (outputFile && (result.status == "up" || verbose)) { push(allResults, result) }
-        if (result.status == "up") { found++ }
-        if (pb) {
-            sys.stdout("\r" + " ".repeat(termCols) + "\r")
-            printResult(result)
-            pb.update(scanned)
-        } else {
-            printResult(result)
-        }
-    }
-
-    if (pb) { sys.stdout("\r" + " ".repeat(termCols) + "\r") }
-    if (!quiet) {
-        print("")
-        let down = scanned - found
-        let status = "Hosts scanned: " + str(scanned) + "/" + str(len(ips))
-        status = status + " - " + colors.green(str(found) + " up")
-        status = status + " - " + colors.red(str(down) + " down")
-        print(status)
+        showResult(scanner.scanHost(ip, timeout, iface))
     }
 
 } else {
@@ -162,36 +158,32 @@ if (opts.slow || len(ips) == 1) {
         sys.stdout(colors.dim("  discovering hosts...") + "\r")
     }
 
-    let results = scanner.scanAll(ips, timeout, iface)
-
-    // Clear status line and print header + results
-    if (!quiet && !noProgress) {
-        sys.stdout(" ".repeat(termCols) + "\r")
-    }
-    printHeader()
-
-    for (r in results) {
-        if (outputFile && (r.status == "up" || verbose)) { push(allResults, r) }
-        if (r.status == "up") { found++ }
-        printResult(r)
-    }
-
-    if (!quiet) {
-        let down = len(ips) - found
-        print("")
-        let status = "Hosts scanned: " + str(len(ips)) + "/" + str(len(ips))
-        status = status + " - " + colors.green(str(found) + " up")
-        status = status + " - " + colors.red(str(down) + " down")
-        print(status)
-    }
+    scanner.scanAll(ips, timeout, iface,
+        lam{ r, i in showResult(r) },
+        lam{ in
+            // Discovery complete — show header and set up progress bar
+            if (!quiet && !noProgress) {
+                sys.stdout(" ".repeat(termCols) + "\r")
+            }
+            printHeader()
+            setupProgress()
+        }
+    )
 }
 
 } catch (err) {
     cancelled = true
-    if (!quiet) {
-        print("")
-        print(colors.yellow("Scan interrupted"))
-    }
+}
+
+clearProgress()
+if (!quiet) {
+    let down = len(ips) - found
+    print("")
+    let status = "Hosts scanned: " + str(scanned) + "/" + str(len(ips))
+    status = status + " - " + colors.green(str(found) + " up")
+    status = status + " - " + colors.red(str(down) + " down")
+    if (cancelled) { status = status + colors.yellow(" (interrupted)") }
+    print(status)
 }
 
 // Write results to file if --output specified
