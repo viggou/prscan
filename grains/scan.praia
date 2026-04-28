@@ -180,25 +180,13 @@ func scanHost(ip, timeout = 1500, iface = nil) {
         if (str(e) == "Interrupted") { throw e }
     }
 
-    // If no NetBIOS response, try reverse DNS
+    // If no NetBIOS response, try reverse DNS via net.query PTR
     if (result.hostname == "") {
         try {
-            let r = sys.exec(["host", ip])
-            if (r.exitCode != 0 || !r.stdout.contains("domain name pointer")) {
-                r = sys.exec(["dig", "+short", "-x", ip])
-            }
-            let out = r.stdout.strip()
-            if (r.exitCode == 0 && len(out) > 0) {
-                if (out.contains("domain name pointer ")) {
-                    out = out.split("domain name pointer ")[1]
-                }
-                if (out.endsWith(".")) {
-                    out = out.slice(0, len(out) - 1)
-                }
-                if (len(out) > 0 && !out.contains("NXDOMAIN") && !out.contains("not found")) {
-                    result.hostname = out
-                    result.status = "up"
-                }
+            let records = net.query(ip, "PTR")
+            if (len(records) > 0) {
+                result.hostname = records[0].hostname
+                result.status = "up"
             }
         } catch (e) {
             if (str(e) == "Interrupted") { throw e }
