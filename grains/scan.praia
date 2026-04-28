@@ -265,10 +265,39 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
     if (onDiscovery) { onDiscovery(pingFailed) }
 
     // ── Fetch ARP table once for MAC lookups ──
+    // Use arp -an directly (no DNS resolution) — much faster after pingAll
+    // populates the cache. We already get hostnames from NetBIOS/PTR.
     let arpTable = {}
     try {
-        for (entry in arp.table()) { arpTable[entry.ip] = entry }
+        let arpOut = sys.exec(["arp", "-an"])
+        if (arpOut.exitCode == 0) {
+            for (line in arpOut.stdout.split("\n")) {
+                if (!line.contains(" at ") || line.contains("(incomplete)")) { continue }
+                let open = line.indexOf("(")
+                let close = line.indexOf(")")
+                if (open < 0 || close <= open) { continue }
+                let ip = line.slice(open + 1, close)
+                let atIdx = line.indexOf(" at ")
+                if (atIdx < 0) { continue }
+                let afterAt = line.slice(atIdx + 4)
+                let sp = afterAt.indexOf(" ")
+                let mac = sp >= 0 ? afterAt.slice(0, sp) : afterAt
+                arpTable[ip] = mac
+            }
+        }
     } catch (e) {}
+    // Linux: read /proc/net/arp directly
+    if (sys.platform == "linux") {
+        try {
+            let lines = sys.read("/proc/net/arp").split("\n")
+            for (i in 1..len(lines)) {
+                let parts = lines[i].replacePattern("\\s+", " ").strip().split(" ")
+                if (len(parts) >= 4 && parts[3] != "00:00:00:00:00:00") {
+                    arpTable[parts[0]] = parts[3]
+                }
+            }
+        } catch (e) {}
+    }
 
     // ── Per-host enrichment + callback ──
     let ordered = []
@@ -276,10 +305,9 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
         let ip = ips[i]
         let r = results[ip]
 
-        // PTR lookup:
-        // - If ping worked: only for alive hosts without a hostname
-        // - If ping failed: try ALL hosts — PTR may be the only discovery method
-        if (r.hostname == "" && (r.status == "up" || pingFailed)) {
+        // PTR lookup for ALL hosts without a hostname.
+        // Some hosts don't respond to ping or NetBIOS but have DNS records.
+        if (r.hostname == "") {
             try {
                 let records = net.query(ip, "PTR")
                 if (len(records) > 0) {
@@ -291,16 +319,10 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
             }
         }
 
-        // ARP lookup from cached table
+        // ARP MAC from cached table
         if (r.status == "up" && (r.mac == "" || r.mac == "00:00:00:00:00:00")) {
             r.mac = ""
-            try {
-                let entry = arpTable[ip]
-                r.mac = entry.mac
-                if (r.hostname == "" && entry.hostname != "") {
-                    r.hostname = entry.hostname
-                }
-            } catch (e) {} // not in ARP table
+            try { r.mac = arpTable[ip] } catch (e) {}
         }
 
         push(ordered, r)
