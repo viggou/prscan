@@ -1,6 +1,6 @@
 # prscan
 
-A network scanner written in [Praia](https://praia.sh) that discovers hosts, NetBIOS names, MAC addresses, and reverse DNS hostnames on a local network. Requires Praia >= 0.4.3
+A network scanner written in [Praia](https://praia.sh) that discovers hosts, NetBIOS names, MAC addresses, and reverse DNS hostnames on a local network. Requires Praia >= 0.4.5.
 
 ## Installation
 

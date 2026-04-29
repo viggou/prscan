@@ -225,14 +225,12 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
             let resp = net.recvFrom(sock)
             if (!resp) { continue }
             let info = parseNBSTATResponse(resp.data)
-            if (info) {
-                try {
-                    let r = results[resp.host]
-                    r.hostname = info.hostname
-                    r.domain = info.domain
-                    r.mac = info.mac
-                    r.status = "up"
-                } catch (e) {} // response from host not in our range
+            if (info && results.has(resp.host)) {
+                let r = results[resp.host]
+                r.hostname = info.hostname
+                r.domain = info.domain
+                r.mac = info.mac
+                r.status = "up"
             }
         }
         net.close(sock)
@@ -245,12 +243,9 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
     // ── Phase 2b: TCP connect fallback when ping is unavailable ──
     if (pingFailed) {
         try {
-            let targets = []
-            for (ip in ips) {
-                if (results[ip].status == "down") {
-                    push(targets, {host: ip, port: 445})
-                }
-            }
+            let targets = ips
+                |> filter(lam{ ip in results[ip].status == "down" })
+                |> map(lam{ ip in {host: ip, port: 445} })
             if (len(targets) > 0) {
                 let tcpResults = net.connectAll(targets, timeout)
                 for (r in tcpResults) {
@@ -321,8 +316,7 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
 
         // ARP MAC from cached table
         if (r.status == "up" && (r.mac == "" || r.mac == "00:00:00:00:00:00")) {
-            r.mac = ""
-            try { r.mac = arpTable[ip] } catch (e) {}
+            r.mac = arpTable.get(ip, "")
         }
 
         push(ordered, r)
