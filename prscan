@@ -74,7 +74,7 @@ if (colHn < 12) { colHn = 12 }
 
 func truncate(s, maxLen) {
     if (len(s) <= maxLen) { return s.padEnd(maxLen) }
-    return s.slice(0, maxLen - 1) + "…"
+    return s.slice(0, maxLen - 1) + "..."
 }
 
 func printHeader() {
