@@ -6,7 +6,7 @@ use "./grains/scan" as scanner
 
 // ── Version from grain.yaml ──
 
-let _manifest = yaml.parse(sys.read(path.join(path.dirname(sys.currentFile()), "grain.yaml")))
+let _manifest = yaml.parse(fs.read(path.join(path.dirname(sys.currentFile()), "grain.yaml")))
 let VERSION = _manifest.version
 
 // ── Argument parsing ──
@@ -26,7 +26,10 @@ let opts = args.parse({
     slow: {type: "bool", help: "Sequential scan (one host at a time)"}
 }, sys.args)
 
-let target = opts.args[0] ?? nil
+// Bounds-check because `opts.args[0]` throws "Array index out of bounds"
+// when the user runs `prscan` with no positional args — `??` only
+// catches nil, not exceptions.
+let target = len(opts.args) > 0 ? opts.args[0] : nil
 let timeout = opts.timeout
 let verbose = opts.verbose
 let quiet = opts.quiet
@@ -209,6 +212,6 @@ if (outputFile && len(allResults) > 0) {
         })).join("\n") + "\n"
     }
 
-    sys.write(outputFile, content)
+    fs.write(outputFile, content)
     if (!quiet) { print(colors.dim("Results written to %{outputFile}")) }
 }

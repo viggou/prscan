@@ -284,7 +284,7 @@ func scanAll(ips, timeout = 1500, iface = nil, onResult = nil, onDiscovery = nil
     // Linux: read /proc/net/arp directly
     if (sys.platform == "linux") {
         try {
-            let lines = sys.readLines("/proc/net/arp")
+            let lines = fs.readLines("/proc/net/arp")
             for (i in 1..len(lines)) {
                 let parts = lines[i].replacePattern("\\s+", " ").strip().split(" ")
                 if (len(parts) >= 4 && parts[3] != "00:00:00:00:00:00") {
