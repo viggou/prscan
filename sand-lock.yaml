@@ -3,4 +3,6 @@ grains:
     source: github.com/viggou/praia-arp
     version: latest
     url: https://github.com/viggou/praia-arp.git
-    installed: 2026-04-28
+    commit: eb276b917e3280d17d43231c9b2dd7aa2d099e53
+    integrity: sha256-876e4354a0aec261f4f6426a506410f1b68edfa01d1a46c7be42e454a95bf43e
+    installed: 2026-05-25
